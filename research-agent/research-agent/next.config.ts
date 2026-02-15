@@ -1,8 +1,18 @@
-import type { NextConfig } from "next";
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  experimental: {
+    serverComponentsExternalPackages: ['@supabase/supabase-js'],
+  },
+  images: {
+    domains: ['ayxappnygjghnsciaier.supabase.co'],
+  },
+  // Optional: Increase timeout for file uploads
+  api: {
+    bodyParser: {
+      sizeLimit: '10mb',
+    },
+    responseLimit: '10mb',
+  },
+}
 
-const nextConfig: NextConfig = {
-  /* config options here */
-  reactCompiler: true,
-};
-
-export default nextConfig;
+module.exports = nextConfig
