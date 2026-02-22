@@ -1,10 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDocuments } from '@/lib/store'
+
+import { getDocuments } from '@/app/lib/store'
 import { OpenAI } from 'openai'
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 })
+
+// Helper function to estimate tokens (rough estimate: 4 chars ≈ 1 token)
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4)
+}
+
+// Helper function to truncate text to fit token limit
+function truncateToTokenLimit(text: string, maxTokens: number): string {
+  const estimatedTokens = estimateTokens(text)
+  if (estimatedTokens <= maxTokens) return text
+  
+  // Truncate to approximate max tokens (leave buffer for system prompt)
+  const maxChars = maxTokens * 4
+  return text.substring(0, maxChars) + `\n\n[Content truncated due to length. Full document is ${text.length} characters.]`
+}
 
 export async function POST(request: NextRequest) {
   console.log('💬 Chat endpoint called')
@@ -27,7 +43,7 @@ export async function POST(request: NextRequest) {
     
     // Log document details for debugging
     documents.forEach((doc, i) => {
-      console.log(`📄 Document ${i+1}: ${doc.filename} (${doc.content.length} chars)`)
+      console.log(`📄 Document ${i+1}: ${doc.filename} (${doc.content.length} chars, ~${estimateTokens(doc.content)} tokens)`)
     })
     
     // If no documents, return early
@@ -39,15 +55,13 @@ export async function POST(request: NextRequest) {
       })
     }
     
-    // Check if the question is about documents in general
-    const isAskingAboutDocuments = message.toLowerCase().includes('document') || 
-                                   message.toLowerCase().includes('file') ||
-                                   message.toLowerCase().includes('upload') ||
-                                   message.toLowerCase().includes('what do i have')
+    // Check if the user is explicitly asking for a list of documents
+    const isAskingForList = message.toLowerCase().match(/\b(list|show|what.*have|how many)\b/) && 
+                            message.toLowerCase().includes('document')
     
-    if (isAskingAboutDocuments) {
+    if (isAskingForList) {
       const docList = documents.map((doc, i) => 
-        `${i+1}. **${doc.filename}** (${Math.round(doc.size/1024)} KB)`
+        `${i+1}. **${doc.filename}** (${Math.round(doc.size/1024)} KB, ~${estimateTokens(doc.content)} tokens)`
       ).join('\n')
       
       return NextResponse.json({
@@ -57,43 +71,76 @@ export async function POST(request: NextRequest) {
       })
     }
     
-    // For content questions, we need to use OpenAI
+    // Calculate total tokens
+    const totalEstimatedTokens = documents.reduce((sum, doc) => sum + estimateTokens(doc.content), 0)
+    console.log(`📊 Total estimated tokens: ${totalEstimatedTokens}`)
+    
+    // Build context with truncation if needed
+    let context = "Here are the uploaded documents. Some may be truncated due to length:\n\n"
+    let totalChars = 0
+    const MAX_TOKENS = 12000 // Leave buffer for system prompt and response
+    
+    for (let i = 0; i < documents.length; i++) {
+      const doc = documents[i]
+      const docTokens = estimateTokens(doc.content)
+      const currentTotalTokens = estimateTokens(context + doc.content)
+      
+      if (currentTotalTokens > MAX_TOKENS) {
+        // Truncate this document
+        const remainingTokens = MAX_TOKENS - estimateTokens(context)
+        const maxChars = remainingTokens * 4
+        context += `[DOCUMENT ${i + 1}: ${doc.filename} (truncated)]\n`
+        context += doc.content.substring(0, maxChars)
+        context += `\n\n[Document truncated. Full length: ${doc.content.length} characters]\n---\n\n`
+        console.log(`⚠️ Truncated ${doc.filename} to fit token limit`)
+        break
+      } else {
+        context += `[DOCUMENT ${i + 1}: ${doc.filename}]\n`
+        context += doc.content + '\n---\n\n'
+        totalChars += doc.content.length
+      }
+    }
+    
+    console.log(`📤 Sending context to OpenAI (${context.length} chars, ~${estimateTokens(context)} tokens)`)
+    
+    // If no OpenAI key, return document info directly
     if (!process.env.OPENAI_API_KEY) {
+      // Extract and return content previews
+      const contentPreviews = documents.map((doc, i) => {
+        const preview = doc.content.substring(0, 300) + (doc.content.length > 300 ? '...' : '')
+        return `${i+1}. ${doc.filename}\n   Preview: ${preview}`
+      }).join('\n\n')
+      
       return NextResponse.json({
-        response: `I found ${documents.length} document(s), but OpenAI is not configured. Here are the filenames:\n\n${
-          documents.map(d => `• ${d.filename}`).join('\n')
-        }\n\nTo analyze content, add your OpenAI API key to .env.local`,
+        response: `I found ${documents.length} document(s). Here's what they contain:\n\n${contentPreviews}`,
         contextFound: true,
         documentCount: documents.length
       })
     }
     
-    // Build comprehensive context from documents
-    let context = ''
-    if (documents.length > 0) {
-      context = documents
-        .map((doc, index) => {
-          // For PDFs, note that they're binary
-          const isPDF = doc.filename.toLowerCase().endsWith('.pdf')
-          const contentPreview = isPDF 
-            ? "[PDF Document - Binary content not fully extracted]"
-            : doc.content.substring(0, 2000)
-          
-          return `[Document ${index + 1}: ${doc.filename}]\n${contentPreview}`
-        })
-        .join('\n\n---\n\n')
-    }
-    
-    console.log('Sending to OpenAI with context length:', context.length)
-    
     try {
+      // Create a prompt that explicitly asks for content analysis
+      const systemPrompt = `You are an AI assistant that analyzes uploaded documents. 
+      
+You have access to the following documents (some may be truncated):
+
+${context}
+
+IMPORTANT INSTRUCTIONS:
+1. ALWAYS analyze the actual document content above when answering questions
+2. Provide specific information, quotes, and details from the documents
+3. If a document is truncated, work with what you have
+4. Never ask the user what they want to know - just analyze what's there
+5. Reference which document you're getting information from
+
+The documents contain real text. Use it to answer questions thoroughly.`
+
+      console.log('🤖 Sending to OpenAI with system prompt')
+      
       const completion = await openai.chat.completions.create({
         model: 'gpt-3.5-turbo',
         messages: [
-          {
-            role: 'system',
-            content: `You are a research assistant analyzing uploaded documents. Here are the documents:\n\n${context}\n\nAnswer questions based on these documents. If the answer isn't in any document, say "I don't see that information in your uploaded documents." Always reference which document you're using.`
-          },
+          { role: 'system', content: systemPrompt },
           { role: 'user', content: message }
         ],
         temperature: 0.7,
@@ -101,9 +148,14 @@ export async function POST(request: NextRequest) {
       })
       
       const response = completion.choices[0].message.content || ''
+      console.log('✅ Received response from OpenAI')
       
-      // Add source note
-      const finalResponse = response + `\n\n📚 *Based on ${documents.length} document${documents.length > 1 ? 's' : ''} in your knowledge base*`
+      // Add source note with truncation warning if needed
+      let finalResponse = response
+      if (totalEstimatedTokens > MAX_TOKENS) {
+        finalResponse += `\n\n⚠️ *Note: Some documents were truncated to fit token limits. For complete analysis, try asking about specific documents or use shorter files.*`
+      }
+      finalResponse += `\n\n📚 *Based on ${documents.length} document${documents.length > 1 ? 's' : ''} in your knowledge base*`
       
       return NextResponse.json({
         response: finalResponse,
@@ -112,13 +164,16 @@ export async function POST(request: NextRequest) {
       })
       
     } catch (openaiError: any) {
-      console.error('OpenAI error:', openaiError)
+      console.error('❌ OpenAI error:', openaiError)
       
-      // Fallback response with document info
+      // Fallback - return actual content from documents (truncated)
+      const contentSummaries = documents.map((doc, i) => {
+        const preview = doc.content.substring(0, 500) + (doc.content.length > 500 ? '...' : '')
+        return `**${doc.filename}**:\n${preview}`
+      }).join('\n\n---\n\n')
+      
       return NextResponse.json({
-        response: `I have ${documents.length} document(s) but couldn't analyze them with AI. Here's what I know:\n\n${
-          documents.map(d => `• ${d.filename}`).join('\n')
-        }\n\nTechnical error: ${openaiError.message}`,
+        response: `I found ${documents.length} document(s). Here's the content I can show you (limited by token constraints):\n\n${contentSummaries}`,
         contextFound: true,
         documentCount: documents.length
       })

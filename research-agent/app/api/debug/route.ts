@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { getDocuments } from '@/lib/store'
+
+import { getDocuments } from '@/app/lib/store'
 
 export async function GET() {
   const documents = getDocuments()
