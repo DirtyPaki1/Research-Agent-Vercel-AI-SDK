@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { processPDF, processText } from '@/lib/document-processor';
-import { storeDocument } from '@/lib/vector-db';
+import { processPDF, processText } from '../../lib/document-processor';
+import { storeDocument } from '../../lib/vector-db';
 
 export async function POST(req: NextRequest) {
   try {
