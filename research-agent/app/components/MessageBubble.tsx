@@ -35,7 +35,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
                   {invocation.toolName}: {invocation.args?.query || 'N/A'}
                 </div>
                 <div className="text-gray-600 mt-1">
-                  {invocation.state === 'result' && invocation.result && (
+                  { invocation.result && (
                     <details>
                       <summary className="cursor-pointer">View tool result</summary>
                       <pre className="mt-1 p-2 bg-gray-50 rounded overflow-auto text-xs">
