@@ -1,18 +1,27 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    serverComponentsExternalPackages: ['@supabase/supabase-js'],
-  },
   images: {
-    domains: ['ayxappnygjghnsciaier.supabase.co'],
+    domains: ['localhost'],
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: '**',
+      },
+    ],
   },
-  // Optional: Increase timeout for file uploads
+  experimental: {
+    serverComponentsExternalPackages: ['pdf-parse'],
+  },
+  // Increase timeout for large file uploads
   api: {
     bodyParser: {
       sizeLimit: '10mb',
     },
-    responseLimit: '10mb',
   },
+  // Enable React strict mode for better development
+  reactStrictMode: true,
+  // SWC minification for faster builds
+  swcMinify: true,
 }
 
 module.exports = nextConfig
