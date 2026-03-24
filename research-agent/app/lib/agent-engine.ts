@@ -1,68 +1,90 @@
 import { streamText, tool } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { queryVectorDB } from './vector-db';
+import { z } from 'zod';
+
+// Define the type for vector DB results
+interface VectorDBResult {
+  text: string;
+  score?: number;
+  source: string;
+}
 
 // Define the agent's tools
 const knowledgeBaseTool = tool({
   description: "Search the uploaded documents and knowledge base for relevant information",
-  parameters: {
-    query: {
-      type: "string",
-      description: "The search query to find relevant documents"
-    }
-  },
+  parameters: z.object({
+    query: z.string().describe("The search query to find relevant documents")
+  }),
   execute: async ({ query }) => {
     console.log(`🔍 Searching knowledge base for: ${query}`);
-    const results = await queryVectorDB(query, 5);
-    
-    if (results.length === 0) {
-      return "No relevant information found in the knowledge base.";
+    try {
+      const results = await queryVectorDB(query, 5) as VectorDBResult[];
+      
+      if (!results || results.length === 0) {
+        return "No relevant information found in the knowledge base.";
+      }
+      
+      const context = results
+        .map((result: VectorDBResult, i: number) => {
+          // Handle case where score might be undefined
+          const relevanceScore = result.score ? result.score.toFixed(2) : 'N/A';
+          return `[Source: ${result.source || 'Unknown'}, Relevance: ${relevanceScore}]\n${result.text}`;
+        })
+        .join('\n\n---\n\n');
+      
+      return `Found ${results.length} relevant document chunks:\n\n${context}`;
+    } catch (error) {
+      console.error('Knowledge base search error:', error);
+      return "Error searching knowledge base. Please try again.";
     }
-    
-    const context = results
-      .map((result, i) => `[Source: ${result.source}, Relevance: ${result.score.toFixed(2)}]\n${result.text}`)
-      .join('\n\n---\n\n');
-    
-    return `Found ${results.length} relevant document chunks:\n\n${context}`;
   }
 });
 
 const webSearchTool = tool({
   description: "Search the web for current, up-to-date information",
-  parameters: {
-    query: {
-      type: "string",
-      description: "The search query for web search"
-    }
-  },
+  parameters: z.object({
+    query: z.string().describe("The search query for web search")
+  }),
   execute: async ({ query }) => {
     console.log(`🌐 Searching web for: ${query}`);
     
-    // Using SerpAPI (Google Search)
-    const response = await fetch('https://serpapi.com/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        q: query,
-        api_key: process.env.SERPAPI_API_KEY,
-        engine: 'google',
-        num: 5
-      })
-    });
-    
-    const data = await response.json();
-    
-    if (data.organic_results) {
-      const results = data.organic_results.slice(0, 3).map((result: any) => ({
-        title: result.title,
-        link: result.link,
-        snippet: result.snippet
-      }));
+    try {
+      // Using SerpAPI (Google Search)
+      const response = await fetch('https://serpapi.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          q: query,
+          api_key: process.env.SERPAPI_API_KEY,
+          engine: 'google',
+          num: 5
+        })
+      });
       
-      return `Web search results:\n${results.map((r: any) => `• ${r.title}: ${r.snippet}\n  Source: ${r.link}`).join('\n')}`;
+      const data = await response.json();
+      
+      if (data.organic_results && data.organic_results.length > 0) {
+        interface WebResult {
+          title: string;
+          link: string;
+          snippet: string;
+        }
+        
+        const results = data.organic_results.slice(0, 3).map((result: any): WebResult => ({
+          title: result.title || 'No title',
+          link: result.link || '#',
+          snippet: result.snippet || 'No description available'
+        }));
+        
+        return `Web search results:\n${results.map((r: WebResult) => `• ${r.title}: ${r.snippet}\n  Source: ${r.link}`).join('\n')}`;
+      }
+      
+      return "No web results found.";
+    } catch (error) {
+      console.error('Web search error:', error);
+      return "Error performing web search. Please try again later.";
     }
-    
-    return "No web results found.";
   }
 });
 
@@ -92,7 +114,7 @@ Current user question: ${userMessage}`;
       knowledgeBaseTool,
       webSearchTool
     },
-    maxSteps: 5, // Allow multiple tool calls if needed
+    maxSteps: 5,
     onStepFinish: (step) => {
       console.log(`Step completed: ${step.stepType}`);
     }
